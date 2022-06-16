@@ -73,16 +73,12 @@ class VSSMAEnv(VSSBaseEnv):
 
         # Initialize Class Atributes
         self.previous_ball_potential = None
-        self.previous_robot_to_wall_potential = None
         self.actions: Dict = None
         self.reward_shaping_total = None
         self.individual_reward = {}
         self.v_wheel_deadzone = 0.05
         self.observation = None
         self.ou_actions = []
-        self.first_step = True
-        #random robot initial positions(ball initial positions is always random)
-        self.random_initial_positions_frame = True
         for i in range(self.n_robots_blue + self.n_robots_yellow):
             self.ou_actions.append(
                 OrnsteinUhlenbeckAction(self.action_space, dt=self.time_step)
@@ -94,9 +90,7 @@ class VSSMAEnv(VSSBaseEnv):
         self.actions = None
         self.reward_shaping_total = None
         self.previous_ball_potential = None
-        self.previous_robot_to_wall_potential = None
         self.individual_reward = {}
-        self.first_step = True
         for ou in self.ou_actions:
             ou.reset()
 
@@ -104,7 +98,6 @@ class VSSMAEnv(VSSBaseEnv):
 
     def step(self, action):
         observation, reward, done, _ = super().step(action)
-        self.first_step = False
         return observation, reward, done, self.reward_shaping_total
 
     def get_rotated_obs(self):
@@ -191,17 +184,13 @@ class VSSMAEnv(VSSBaseEnv):
 
     def _calculate_reward_and_done(self):
         reward = {f'robot_{i}': 0 for i in range(self.n_robots_control)}
-        done = False
-        w_move = 0.2    #[-5,5]
-        w_ball_grad = 0.8   #[-5,5]
-        w_energy = 2e-6
-        w_robot_to_wall = 0
-        w_robot_to_robot = 0      #0 or -1
-        w_speed = 0.05       #0 or -1
-        w_closest_move = 0
-        w_goal = 10
-        w_stuck = 0     #0 or -1
-
+        goal = False
+        w_move = 0
+        w_ball_grad = 0.8
+        w_closest_move=0.2
+        w_energy = 0
+        # w_energy=0
+        w_speed = 0.1
         if self.reward_shaping_total is None:
             self.reward_shaping_total = {'goal_score': 0, 'ball_grad': 0,
                                          'goals_blue': 0, 'goals_yellow': 0}
@@ -209,31 +198,25 @@ class VSSMAEnv(VSSBaseEnv):
             for i in range(self.n_robots_control):
                 self.individual_reward[f'robot_{i}'] = {'move': 0, 'energy': 0, 'speed': 0}
 
-        # Check if goal
+        # Check if goal ocurred
         if self.frame.ball.x > (self.field.length / 2):
             self.reward_shaping_total['goal_score'] += 1
             self.reward_shaping_total['goals_blue'] += 1
             for i in range(self.n_robots_control):
-                reward[f'robot_{i}'] = w_goal * 1
-            done = True
+                reward[f'robot_{i}'] = 10
+            goal = True
         elif self.frame.ball.x < -(self.field.length / 2):
             self.reward_shaping_total['goal_score'] -= 1
             self.reward_shaping_total['goals_yellow'] += 1
             for i in range(self.n_robots_control):
-                reward[f'robot_{i}'] = w_goal * -1
-            done = True
+                reward[f'robot_{i}'] = -10
+            goal = True
         else:
-            # if not goal
 
             if self.last_frame is not None:
                 # Calculate ball potential
                 grad_ball_potential = self._ball_grad()
-
-                # Calcuate closest move reward
-                closest_move = self._closet_move()
-
                 self.reward_shaping_total['ball_grad'] = w_ball_grad * grad_ball_potential  # noqa
-                dead_robot_count=0
                 for idx in range(self.n_robots_control):
                     # Calculate Move ball
                     move_reward = self._move_reward(robot_idx=idx)
@@ -241,11 +224,8 @@ class VSSMAEnv(VSSBaseEnv):
                     # Calculate Energy penalty
                     energy_penalty = self._energy_penalty(robot_idx=idx)
 
-                    #Calcuate robot to wall reward
-                    robot_to_wall = self._robot_to_wall(robot_idx=idx)
-
-                    #Calcuate robot to robot reward
-                    robot_to_robot = self._robot_to_robot(robot_idx=idx)
+                    #Calcuate closest move reward
+                    closest_move = self._closet_move()
 
                     # Calculate speed reward
                     speed_dead_zone=0.1
@@ -254,33 +234,23 @@ class VSSMAEnv(VSSBaseEnv):
                     speed_abs=math.sqrt(math.pow(speed_x,2)+math.pow(speed_y,2))
                     speed_reward=0
                     if speed_abs<=speed_dead_zone:
-                        speed_reward=-1
+                        speed_reward=-0.1
 
                     rew = w_ball_grad * grad_ball_potential + \
                         w_move * move_reward + \
                         w_energy * energy_penalty + \
                         w_speed * speed_reward + \
-                        w_closest_move * closest_move + \
-                        w_robot_to_wall * robot_to_wall + \
-                        w_robot_to_robot * robot_to_robot
-
-                    if speed_reward<0 and (robot_to_wall<0 or robot_to_robot<0):
-                        dead_robot_count+=1
+                        w_closest_move * closest_move
 
                     reward[f'robot_{idx}'] = rew
                     self.individual_reward[f'robot_{idx}']['move'] = w_move * move_reward  # noqa
                     self.individual_reward[f'robot_{idx}']['energy'] = w_energy * energy_penalty  # noqa
-                    self.individual_reward[f'robot_{idx}']['speed'] = w_speed * speed_reward  # noqa
+                    self.individual_reward[f'robot_{idx}']['speed'] = w_speed * speed_abs  # noqa
                     self.individual_reward[f'robot_{idx}']['closest_move'] = w_closest_move * closest_move  # noqa
-                    self.individual_reward[f'robot_{idx}']['robot_to_wall'] = w_robot_to_wall * robot_to_wall  # noqa
-                    self.individual_reward[f'robot_{idx}']['robot_to_robot'] = w_robot_to_robot * robot_to_robot  # noqa
-                # if not self.first_step and dead_robot_count == self.n_robots_control:
-                #     done = True
-                #     for i in range(self.n_robots_control):
-                #         reward[f'robot_{i}'] = w_stuck * -1
-        return reward, done
 
-    def _get_closet_robot_idx(self):
+        return reward, goal
+
+    def _closet_move(self):
         robots_distance_to_ball = [[],[]]
         for idx in range(self.n_robots_control):
             ball = np.array([self.frame.ball.x, self.frame.ball.y])
@@ -290,130 +260,8 @@ class VSSMAEnv(VSSBaseEnv):
             robots_distance_to_ball[0].append(idx)
             robots_distance_to_ball[1].append(robot_distance_to_ball)
         min_idx = robots_distance_to_ball[0][np.argmin(robots_distance_to_ball[1])]
-        return min_idx
-
-    def _closet_move(self):
-        closest_move = self._move_reward(robot_idx=self._get_closet_robot_idx())
+        closest_move = self._move_reward(robot_idx=min_idx)
         return closest_move
-
-    # def _robot_to_wall(self, robot_idx: int):
-    #     robot = np.array([self.frame.robots_blue[robot_idx].x,
-    #                       self.frame.robots_blue[robot_idx].y])
-    #     robot_vel = np.array([self.frame.robots_blue[robot_idx].v_x,
-    #                           self.frame.robots_blue[robot_idx].v_y])
-    #
-    #     if robot[0] >= 0 and robot[1] >= 0:
-    #         if robot[1] <= robot[0] - 0.1 and robot[1] >= 0.2:
-    #             wall = np.array([0.75, robot[1]], dtype=float)
-    #         else:
-    #             wall = np.array([robot[0], 0.65], dtype=float)
-    #     elif robot[0] < 0 and robot[1] > 0:
-    #         if robot[1] <= -robot[0] - 0.1 and robot[1] >= 0.2:
-    #             wall = np.array([-0.75, robot[1]], dtype=float)
-    #         else:
-    #             wall = np.array([robot[0], 0.65], dtype=float)
-    #     elif robot[0] > 0 and robot[1] < 0:
-    #         if robot[1] >= -robot[0] + 0.1 and robot[1] <= -0.2:
-    #             wall = np.array([0.75, robot[1]], dtype=float)
-    #         else:
-    #             wall = np.array([robot[0], -0.65], dtype=float)
-    #     else:
-    #         if robot[1] >= robot[0] + 0.1 and robot[1] <= -0.2:
-    #             wall = np.array([-0.75, robot[1]], dtype=float)
-    #         else:
-    #             wall = np.array([robot[0], -0.65], dtype=float)
-    #     robot_wall = wall - robot
-    #     robot_wall = robot_wall / np.linalg.norm(robot_wall)
-    #     robot_to_wall = -np.dot(robot_wall, robot_vel)
-    #     robot_to_wall = np.clip(robot_to_wall / 0.4, -5.0, 5.0)
-    #
-    #     return robot_to_wall
-
-    # def _robot_to_wall(self, robot_idx: int):
-    #     robot = np.array([self.frame.robots_blue[robot_idx].x,
-    #                       self.frame.robots_blue[robot_idx].y])
-    #
-    #     if np.abs(robot[1]) <= np.abs(robot[0]) - 0.1 and np.abs(robot[1]) >= 0.2: #blue area
-    #         dist = np.abs(0.75 - np.abs(robot[0])) #distance between robot and wall
-    #         robot_to_wall_potential = dist / 0.45 - 1
-    #         #print("!!!!!!!!")
-    #     else:
-    #         dist = np.abs(0.65 - np.abs(robot[1])) #distance between robot and wall
-    #         robot_to_wall_potential = dist / 0.65 - 1
-    #         #print("############")
-    #
-    #     grad_robot_to_wall_potential = 0
-    #     if self.previous_robot_to_wall_potential is not None:
-    #         diff = robot_to_wall_potential - self.previous_robot_to_wall_potential
-    #         # print("!!!!!!!!!!!!!!!")
-    #         # print(robot_to_wall_potential)
-    #         # print(self.time_step)
-    #         grad_robot_to_wall_potential = np.clip(diff / (self.time_step * 100),-5.0, 5.0)
-    #
-    #     self.previous_robot_to_wall_potential = robot_to_wall_potential
-    #
-    #
-    #     return grad_robot_to_wall_potential
-
-    def _robot_to_wall(self, robot_idx: int, robot_to_wall_dead_zone = 0.16, robot_to_wall_penalty = -10):
-        robot = np.array([self.frame.robots_blue[robot_idx].x,
-                          self.frame.robots_blue[robot_idx].y])
-        robot_to_wall = 0
-
-        if np.abs(robot[0]) <0.75:
-            if 0.75 - np.abs(robot[0])  <= robot_to_wall_dead_zone and np.abs(robot[1]) >= 0.2:
-                robot_to_wall = robot_to_wall + robot_to_wall_penalty
-            if 0.65 - np.abs(robot[1]) <= robot_to_wall_dead_zone:
-                robot_to_wall = robot_to_wall + robot_to_wall_penalty
-        else:
-            if 0.85 - np.abs(robot[0])  <= robot_to_wall_dead_zone:
-                robot_to_wall = robot_to_wall + robot_to_wall_penalty
-            if 0.2 - np.abs(robot[1]) <= robot_to_wall_dead_zone:
-                robot_to_wall = robot_to_wall + robot_to_wall_penalty
-
-
-        return robot_to_wall
-
-    # def _robot_to_robot(self, robot_idx: int):
-    #     robot = np.array([self.frame.robots_blue[robot_idx].x,
-    #                       self.frame.robots_blue[robot_idx].y])
-    #     robot_vel = np.array([self.frame.robots_blue[robot_idx].v_x,
-    #                           self.frame.robots_blue[robot_idx].v_y])
-    #     robot_to_robot = 0
-    #     for idx in range(self.n_robots_control):
-    #         if idx != robot_idx:
-    #             other_robot = np.array([self.frame.robots_blue[idx].x,
-    #                               self.frame.robots_blue[idx].y])
-    #             robot_other_robot = other_robot - robot
-    #             robot_other_robot = robot_other_robot / np.linalg.norm(robot_other_robot)
-    #             tmp = -np.dot(robot_other_robot, robot_vel)
-    #             robot_to_robot = tmp + robot_to_robot
-    #
-    #     robot_to_robot = np.clip(robot_to_robot / 0.4, -5.0, 5.0)
-    #
-    #     return robot_to_robot
-
-    def _robot_to_robot(self, robot_idx: int, robot_to_robot_dead_zone = 0.16, robot_to_robot_penalty = -1):
-        robot = np.array([self.frame.robots_blue[robot_idx].x,
-                          self.frame.robots_blue[robot_idx].y])
-        # robot_vel = np.array([self.frame.robots_blue[robot_idx].v_x,
-        #                       self.frame.robots_blue[robot_idx].v_y])
-        robot_to_robot = 0
-        for idx in range(self.n_robots_control):
-            if idx != robot_idx:
-                other_robot = np.array([self.frame.robots_blue[idx].x,
-                                  self.frame.robots_blue[idx].y])
-                robot_other_robot = other_robot - robot
-                robot_other_robot_dist = math.sqrt(robot_other_robot[0] ** 2 + robot_other_robot[1] ** 2)
-                if robot_other_robot_dist <= robot_to_robot_dead_zone:
-                    # print("#########")
-                    # print("robot {} to robot {} distance is {}".format(robot_idx, idx, robot_other_robot_dist))
-                    robot_to_robot = robot_to_robot + robot_to_robot_penalty
-
-        # robot_to_robot = np.clip(robot_to_robot / 0.4, -5.0, 5.0)
-
-        return robot_to_robot
-
 
     def _get_initial_positions_frame(self):
         '''Returns the position of each robot and ball for the initial frame'''
@@ -426,46 +274,33 @@ class VSSMAEnv(VSSBaseEnv):
         def y(): return random.uniform(-field_half_width + 0.1,
                                        field_half_width - 0.1)
 
+        def theta(): return random.uniform(0, 360)
+
         pos_frame: Frame = Frame()
 
-        if self.random_initial_positions_frame == False:
-            pos_frame.ball = Ball(x=x(), y=y())
-            #pos_frame.ball = Ball(x=0, y=0)
+        pos_frame.ball = Ball(x=x(), y=y())
 
-            pos_frame.robots_blue[0] = Robot(x=-0.375, y=0.4, theta=0)
-            # pos_frame.robots_blue[0] = Robot(x=-0.5, y=0.61, theta=270)
-            pos_frame.robots_blue[1] = Robot(x=-0.375, y=0, theta=0)
-            pos_frame.robots_blue[2] = Robot(x=-0.375, y=-0.4, theta=0)
 
-            pos_frame.robots_yellow[0] = Robot(x=0.375, y=0.4, theta=180)
-            pos_frame.robots_yellow[1] = Robot(x=0.375, y=0, theta=180)
-            pos_frame.robots_yellow[2] = Robot(x=0.375, y=-0.4, theta=180)
+        min_dist = 0.1
 
-        if self.random_initial_positions_frame == True:
-            def theta(): return random.uniform(0, 360)
-
-            pos_frame.ball = Ball(x=x(), y=y())
-
-            min_dist = 0.1
-
-            places = KDTree()
-            places.insert((pos_frame.ball.x, pos_frame.ball.y))
-
-            for i in range(self.n_robots_blue):
+        places = KDTree()
+        places.insert((pos_frame.ball.x, pos_frame.ball.y))
+        
+        for i in range(self.n_robots_blue):
+            pos = (x(), y())
+            while places.get_nearest(pos)[1] < min_dist:
                 pos = (x(), y())
-                while places.get_nearest(pos)[1] < min_dist:
-                    pos = (x(), y())
 
-                places.insert(pos)
-                pos_frame.robots_blue[i] = Robot(x=pos[0], y=pos[1], theta=theta())
+            places.insert(pos)
+            pos_frame.robots_blue[i] = Robot(x=pos[0], y=pos[1], theta=theta())
 
-            for i in range(self.n_robots_yellow):
+        for i in range(self.n_robots_yellow):
+            pos = (x(), y())
+            while places.get_nearest(pos)[1] < min_dist:
                 pos = (x(), y())
-                while places.get_nearest(pos)[1] < min_dist:
-                    pos = (x(), y())
 
-                places.insert(pos)
-                pos_frame.robots_yellow[i] = Robot(x=pos[0], y=pos[1], theta=theta())
+            places.insert(pos)
+            pos_frame.robots_yellow[i] = Robot(x=pos[0], y=pos[1], theta=theta())
 
         return pos_frame
 
@@ -495,7 +330,7 @@ class VSSMAEnv(VSSBaseEnv):
         Difference of potential of the ball in time_step seconds.
         '''
         # Calculate ball potential
-        length_cm = self.field.length #* 100
+        length_cm = self.field.length * 100
         half_lenght = (self.field.length / 2.0)\
             + self.field.goal_depth
 
@@ -514,9 +349,6 @@ class VSSMAEnv(VSSBaseEnv):
         # = actual_potential - previous_potential
         if self.previous_ball_potential is not None:
             diff = ball_potential - self.previous_ball_potential
-            # print("!!!!!!!!!!!!!!!")
-            # print(ball_potential )
-            # print(self.time_step)
             grad_ball_potential = np.clip(diff * 3 / self.time_step,
                                           -5.0, 5.0)
 

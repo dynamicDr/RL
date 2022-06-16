@@ -160,7 +160,8 @@ class RCGymRender:
         y_goal = self.field.goal_width / 2
         
         # Corners Angle offset
-        corner = 0.07
+        #corner = 0.07
+        corner = 0
 
         # add field borders
         field_border_points = [

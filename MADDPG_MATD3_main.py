@@ -4,8 +4,8 @@ import re
 
 import torch
 import numpy as np
+from gym import wrappers
 from torch.utils.tensorboard import SummaryWriter
-from make_env import make_env
 import argparse
 from replay_buffer import ReplayBuffer
 from maddpg import MADDPG
@@ -103,6 +103,17 @@ class Runner:
 
                 if episode_step >= self.args.episode_limit:
                     terminate = True
+
+                #Reset when the ball goes out of bounds, notice corner = 0
+                # if self.args.ball_out_reset :
+                #     ball_x = obs_next_n[0][0]
+                #     ball_y = obs_next_n[0][1]
+                #     if ball_y >= 0.23 or ball_y <= -0.23 :
+                #         '''
+                #         Notice that these numbers are all estimates!!!
+                #         '''
+                #         if ball_x <= -0.8 or ball_x >= 0.8 or ball_y <= -0.69 or ball_y >= 0.69:#
+                #             terminate = True
             self.episode += 1
             avg_train_reward=episode_reward/episode_step
             print("============epi={},total_step={},avg_train_reward={}=============".format(self.episode,self.total_steps,avg_train_reward))
@@ -116,6 +127,8 @@ class Runner:
         if self.args.display:
             return
         evaluate_reward = 0
+        if self.args.record:
+            self.env_evaluate= wrappers.RecordVideo(self.env_evaluate, f'{self.args.record_dir}/num_{self.number}_episode_{self.episode}/')
         for _ in range(self.args.evaluate_times):
             obs_n = self.env_evaluate.reset()
             episode_reward = 0
@@ -123,13 +136,16 @@ class Runner:
             for _ in range(self.args.episode_limit):
                 a_n = [agent.choose_action(obs, noise_std=0) for agent, obs in zip(self.agent_n, obs_n)]  # We do not add noise when evaluating
                 obs_next_n, r_n, done_n, _ = self.env_evaluate.step(copy.deepcopy(a_n))
+                if self.args.record:
+                    self.env_evaluate.render()
                 episode_reward += sum(r_n.values())
                 episode_step += 1
                 obs_n = obs_next_n
                 if done_n:
                     break
             evaluate_reward += episode_reward/episode_step
-
+        if self.args.record:
+            self.env_evaluate = self.env_evaluate.unwrapped
         evaluate_reward = evaluate_reward / self.args.evaluate_times
         self.evaluate_rewards.append(evaluate_reward)
         print("==========evaluate=========")
@@ -149,7 +165,7 @@ class Runner:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Hyperparameters Setting for MADDPG and MATD3 in MPE environment")
     parser.add_argument("--max_train_steps", type=int, default=int(1e6), help=" Maximum number of training steps")
-    parser.add_argument("--episode_limit", type=int, default=300, help="Maximum number of steps per episode")#500
+    parser.add_argument("--episode_limit", type=int, default=300, help="Maximum number of steps per episode")#300
     parser.add_argument("--evaluate_freq", type=float, default=30000, help="Evaluate the policy every 'evaluate_freq' steps")
     parser.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
     parser.add_argument("--max_action", type=float, default=1.0, help="Max action")
@@ -172,19 +188,22 @@ if __name__ == '__main__':
     parser.add_argument("--policy_noise", type=float, default=0.2, help="Target policy smoothing")
     parser.add_argument("--noise_clip", type=float, default=0.5, help="Clip noise")
     parser.add_argument("--policy_update_freq", type=int, default=2, help="The frequency of policy updates")
-    parser.add_argument("--restore", type=bool, default=True, help="Restore from checkpoint")
-    parser.add_argument("--restore_model_dir", type=str, default="/home/user/football/rsoccer-maddpg&matd3-pytorch/model/VSSMA-v0/MATD3_actor_number_13_step_870k_agent_{}.pth", help="Restore from checkpoint")
-    parser.add_argument("--display", type=bool, default=True, help="Display mode")
+    parser.add_argument("--restore", type=bool, default=False, help="Restore from checkpoint")
+    parser.add_argument("--restore_model_dir", type=str, default="/home/user/football/rsoccer-maddpg&matd3-pytorch/model/VSSMA-v0/MATD3_actor_number_13_step_150k_agent_{}.pth", help="Restore from checkpoint")
+    parser.add_argument("--display", type=bool, default=False, help="Display mode")
+    #parser.add_argument("--ball_out_reset", type=bool, default=True, help="Reset when the ball goes out of26ounds, notice corner = 0")
+    parser.add_argument("--record", type=bool, default=True, help="Save evaluate video")
+    parser.add_argument("--record_dir", type=str, default='./videos', help="Video save path")
 
     args = parser.parse_args()
     args.noise_std_decay = (args.noise_std_init - args.noise_std_min) / args.noise_decay_steps
 
     env_name = "VSSMA-v0"
     seed = 0
-    number = 13
+    number = 27
 
     runner = Runner(args, env_name=env_name, number=number, seed=seed)
-    if args.display or args.restore:
+    if args.restore:
         load_number = re.findall(r"number_(.+?)_", args.restore_model_dir)[0]
         assert load_number == str(number)
         print("Loading...")
